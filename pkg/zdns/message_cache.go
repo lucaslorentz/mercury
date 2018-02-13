@@ -11,7 +11,7 @@ import (
 
 var (
 	// RateLimitMax is the Number of requests before ignoring request (in RateLimitAge timeframe)
-	RateLimitMax = 5
+	RateLimitMax = 8
 	// RateLimitAge is Time to keep message cache (and in which to count max requests)
 	RateLimitAge = 2 * time.Second
 	// MsgRateLimitReached is the rate limit response
@@ -38,8 +38,9 @@ var msgCache = messageCache{
 }
 
 func init() {
-	go cleanMessageCache()
+	go cleanMessageCacheTimer()
 }
+
 func getMessageCache(client net.IP, msg *dnssrv.Msg) string {
 	msgCache.Lock()
 	defer msgCache.Unlock()
@@ -76,27 +77,30 @@ func addMessageCache(client net.IP, msg *dnssrv.Msg) {
 
 }
 
-func cleanMessageCache() {
+func cleanMessageCacheTimer() {
 	ticker := time.NewTicker(1 * time.Second)
 	for {
 		select {
 		case <-ticker.C:
+			cleanMessageCache()
+		}
+	}
+}
 
-			msgCache.Lock()
-			defer msgCache.Unlock()
-			tmp := make(map[string][]messageCacheDetail)
+func cleanMessageCache() {
+	msgCache.Lock()
+	defer msgCache.Unlock()
+	tmp := make(map[string][]messageCacheDetail)
 
-			for ip := range msgCache.Source {
-				tmp[ip] = msgCache.Source[ip]
-			}
+	for ip := range msgCache.Source {
+		tmp[ip] = msgCache.Source[ip]
+	}
 
-			now := time.Now()
-			for ip, cache := range tmp {
-				for id := len(cache); id > 1; id-- {
-					if tmp[ip][id].Date.Before(now) {
-						msgCache.Source[ip] = append(msgCache.Source[ip][:id], msgCache.Source[ip][id+1:]...)
-					}
-				}
+	now := time.Now()
+	for ip, cache := range tmp {
+		for id := len(cache); id > 1; id-- {
+			if tmp[ip][id].Date.Before(now) {
+				msgCache.Source[ip] = append(msgCache.Source[ip][:id], msgCache.Source[ip][id+1:]...)
 			}
 		}
 	}

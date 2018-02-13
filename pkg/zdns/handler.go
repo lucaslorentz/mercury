@@ -73,7 +73,7 @@ Opscode:
 					}
 					msg.Rcode = dnssrv.RcodeRefused
 				default:
-					dnsServe(msg, "", q.Name, q.Qtype, clientIP, bufsize)
+					dnscache.dnsServe(msg, "", q.Name, q.Qtype, clientIP, bufsize)
 				}
 
 				// Add to message cache
@@ -81,7 +81,7 @@ Opscode:
 			} else if dnscache.IsServedDomain(getDomain(q.Name)) {
 				// we serve Any other record
 				host, domain := splitDomain(q.Name)
-				dnsServe(msg, host, domain, q.Qtype, clientIP, bufsize)
+				dnscache.dnsServe(msg, host, domain, q.Qtype, clientIP, bufsize)
 				msg.Authoritative = true
 
 				// Add to message cache

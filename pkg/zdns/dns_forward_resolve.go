@@ -13,9 +13,6 @@ func Resolve(ns []string, dnsHost string, dnsDomain string, dnsQuery uint16) ([]
 	if len(ns) == 0 {
 		return []Record{}, fmt.Errorf("No NS found to query")
 	}
-	c := new(dnssrv.Client)
-	m := new(dnssrv.Msg)
-	m.SetEdns0(4096, true)
 	var question string
 	if dnsHost == "" {
 		question = dnsDomain
@@ -35,7 +32,6 @@ func Resolve(ns []string, dnsHost string, dnsDomain string, dnsQuery uint16) ([]
 		ns = dest[:maxNameservers]
 	}
 
-	m.SetQuestion(question, dnsQuery)
 	/* do nslookup on all servers */
 	/*
 		zone, _, err := c.Exchange(m, fmt.Sprintf("%s:%d", ns[0], 53))
@@ -46,18 +42,27 @@ func Resolve(ns []string, dnsHost string, dnsDomain string, dnsQuery uint16) ([]
 
 	/* parallel lookups on all servers */
 
+	/*
+		m := new(dnssrv.Msg)
+		m.SetEdns0(4096, true)
+		m.SetQuestion(question, dnsQuery)
+	*/
+
 	resultChan := make(chan *dnssrv.Msg)
 	for _, nsSrv := range ns {
-		go func() {
-			zone, _, err := c.Exchange(m, fmt.Sprintf("%s:%d", nsSrv, 53))
-			//if err == nil && len(zone.Answer) > 0 {
-			if err == nil {
-				select {
-				case resultChan <- zone:
-				default:
+		go ResolveSingle(fmt.Sprintf("%s:%d", nsSrv, 53), question, dnsQuery, resultChan)
+		/*
+			go func() {
+				c := new(dnssrv.Client)
+				zone, _, err := c.Exchange(m, fmt.Sprintf("%s:%d", nsSrv, 53))
+				if err == nil {
+					select {
+					case resultChan <- zone:
+					default:
+					}
 				}
-			}
-		}()
+			}()
+		*/
 	}
 
 	var zone *dnssrv.Msg
@@ -79,4 +84,19 @@ gotresult:
 
 	records := forwardCache.importZone(zone.String())
 	return records, nil
+}
+
+// ResolveSingle resolves a single request at a single DNS server, and returns its result to chan
+func ResolveSingle(ns string, question string, dnsQuery uint16, channel chan *dnssrv.Msg) {
+	c := new(dnssrv.Client)
+	m := new(dnssrv.Msg)
+	m.SetEdns0(4096, true)
+	m.SetQuestion(question, dnsQuery)
+	zone, _, err := c.Exchange(m, ns)
+	if err == nil {
+		select {
+		case channel <- zone:
+		default:
+		}
+	}
 }

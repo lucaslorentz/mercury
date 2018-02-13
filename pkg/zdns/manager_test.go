@@ -11,7 +11,7 @@ import (
 	dnssrv "github.com/miekg/dns"
 )
 
-var address = "127.0.0.1:15353"
+var address = "127.0.0.1:15355"
 
 var _, net1, _ = net.ParseCIDR("127.0.0.1/32")
 var _, net2, _ = net.ParseCIDR("127.0.0.2/32")
@@ -52,7 +52,7 @@ var recordsRemove = map[string][]Record{
 	},
 }
 
-func TestExample(t *testing.T) {
+func TestDNSServer(t *testing.T) {
 
 	m := New(address)
 
@@ -118,7 +118,7 @@ func TestExample(t *testing.T) {
 	})
 
 	//fmt.Printf("%s", m.Records())
-	//time.Sleep(30 * time.Second)
+	//time.Sleep(10 * time.Second)
 	m.Stop()
 
 	logs := channelReadStrings(m.Log, 1)
@@ -144,7 +144,7 @@ func testStaticQueries(t *testing.T) {
 	m.SetQuestion("example.com.", dnssrv.TypeMX)
 	r, _, err := c.Exchange(m, address)
 	if err != nil {
-		t.Errorf("Lookup failed: %s\n", err)
+		t.Errorf("Lookup failed for %+v: %s\n", m.Question, err)
 	}
 	return
 	checkResult(t, r, 1, 2, 4) // request, answers, auth, extra
@@ -154,7 +154,7 @@ func testStaticQueries(t *testing.T) {
 	m.SetQuestion("example.com.", dnssrv.TypeNS)
 	r, _, err = c.Exchange(m, address)
 	if err != nil {
-		t.Errorf("Lookup failed: %s\n", err)
+		t.Errorf("Lookup failed for %+v: %s\n", m.Question, err)
 	}
 	checkResult(t, r, 2, 0, 2) // request, answers, auth, extra
 
@@ -163,7 +163,7 @@ func testStaticQueries(t *testing.T) {
 	m.SetQuestion("example.com.", dnssrv.TypeSOA)
 	r, _, err = c.Exchange(m, address)
 	if err != nil {
-		t.Errorf("Lookup failed: %s\n", err)
+		t.Errorf("Lookup failed for %+v: %s\n", m.Question, err)
 	}
 	checkResult(t, r, 1, 2, 2) // request, answers, auth, extra
 
@@ -172,7 +172,7 @@ func testStaticQueries(t *testing.T) {
 	m.SetQuestion("www.example.com.", dnssrv.TypeA)
 	r, _, err = c.Exchange(m, address)
 	if err != nil {
-		t.Errorf("Lookup failed: %s\n", err)
+		t.Errorf("Lookup failed for %+v: %s\n", m.Question, err)
 	}
 	checkResult(t, r, 2, 2, 2) // request, answers, auth, extra
 
@@ -181,7 +181,7 @@ func testStaticQueries(t *testing.T) {
 	m.SetQuestion("Www3.ExAmpLe.CoM.", dnssrv.TypeA)
 	r, _, err = c.Exchange(m, address)
 	if err != nil {
-		t.Errorf("Lookup failed: %s\n", err)
+		t.Errorf("Lookup failed for %+v: %s\n", m.Question, err)
 	}
 	checkResult(t, r, 3, 2, 2) // request, answers, auth, extra
 	if strings.Index(r.Answer[0].String(), "Www3.ExAmpLe.CoM.") < 0 {
@@ -202,7 +202,7 @@ func testBalancedQueries(t *testing.T) {
 			m.SetQuestion(record.BalanceMode+".example.com.", dnssrv.TypeA)
 			r, _, err := c.Exchange(m, address)
 			if err != nil {
-				t.Errorf("Lookup failed: %s\n", err)
+				t.Errorf("Lookup failed for %+v: %s\n", m.Question, err)
 			}
 			if strings.Index(r.Answer[0].String(), "127.0.0.1") < 0 {
 				t.Errorf("Result of %s failed, expected 127.0.0.1 to be the record, got: %+v\n", record.BalanceMode, r.Answer[0])
@@ -224,7 +224,7 @@ func testForwardQueries(t *testing.T) {
 	m.SetQuestion("wwW.gOOgle.com.", dnssrv.TypeA)
 	r, _, err = c.Exchange(m, address)
 	if err != nil {
-		t.Errorf("Lookup failed: %s\n", err)
+		t.Errorf("Lookup failed for %+v: %s\n", m.Question, err)
 	}
 	checkResult(t, r, 1, 0, 0) // request, answers, auth, extra
 
@@ -233,7 +233,7 @@ func testForwardQueries(t *testing.T) {
 	m.SetQuestion("wwW.nu.nl.", dnssrv.TypeA)
 	r, _, err = c.Exchange(m, address)
 	if err != nil {
-		t.Errorf("Lookup failed: %s\n", err)
+		t.Errorf("Lookup failed for %+v: %s\n", m.Question, err)
 	}
 	checkResult(t, r, 9, 0, 0) // request, answers, auth, extra
 }
