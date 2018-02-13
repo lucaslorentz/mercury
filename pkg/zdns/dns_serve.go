@@ -10,14 +10,14 @@ import (
 	dnssrv "github.com/miekg/dns"
 )
 
-func dnsServe(msg *dnssrv.Msg, dnsHost string, dnsDomain string, dnsQuery uint16, client net.IP, bufsize uint16) {
+func (c *Cache) dnsServe(msg *dnssrv.Msg, dnsHost string, dnsDomain string, dnsQuery uint16, client net.IP, bufsize uint16) {
 
 	// find nameserver NS (self)
 	// find nameserver A
 	// check record
 
 	// Get our original request first
-	err := dnscache.GetRecursive(msg, 0, dnsDomain, dnsQuery, dnsHost, client, false)
+	err := c.GetRecursive(msg, 0, dnsDomain, dnsQuery, dnsHost, client, false)
 	if err != nil {
 		// TODO: error handling
 		//msg.Rcode = msg.
@@ -26,7 +26,7 @@ func dnsServe(msg *dnssrv.Msg, dnsHost string, dnsDomain string, dnsQuery uint16
 	// Get the NS record to determain if we can send the authoritive flag and add the NS answers
 	if dnsQuery != dnssrv.TypeNS {
 		// Find NS records in our cache
-		err := dnscache.GetRecursive(msg, -1, dnsDomain, dnssrv.TypeNS, "", client, false) // -1 = NS
+		err := c.GetRecursive(msg, -1, dnsDomain, dnssrv.TypeNS, "", client, false) // -1 = NS
 		if err == nil {
 			msg.Authoritative = true
 		}
@@ -35,7 +35,7 @@ func dnsServe(msg *dnssrv.Msg, dnsHost string, dnsDomain string, dnsQuery uint16
 	o.Hdr.Name = "."
 	o.Hdr.Rrtype = dnssrv.TypeOPT
 	o.SetDo()
-	o.SetUDPSize(bufsize) // TODO(miek): echo client
+	o.SetUDPSize(bufsize)
 	msg.Extra = append(msg.Extra, o)
 }
 
