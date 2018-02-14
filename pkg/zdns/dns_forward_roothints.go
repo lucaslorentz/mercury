@@ -64,21 +64,7 @@ func getRootHints() (string, error) {
 }
 
 func parseRootHints(body string) error {
-	// TODO: cache body in case we can't connect during startup - we need something to start with regardless
 	forwardCache.importZone(body)
-	//fmt.Printf("Body: %s", body)
-	/*
-		for t := range dnssrv.ParseZone(strings.NewReader(string(body)), "", "") {
-			if t.Error != nil {
-				continue
-			}
-			record := RRtoRecord(t.RR)
-			if forwardCache.Exists(record) {
-				forwardCache.Remove(record.Domain, record)
-			} else {
-				forwardCache.Add(record.Domain, record)
-			}
-		}*/
 	return nil
 }
 
