@@ -78,12 +78,12 @@ func TestDNSServer(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to start manager: %s", err)
 	}
-	/*
-		err = m.Start()
-		if err == nil {
-			t.Errorf("successfully started manager again. should not be possible: %s", err)
-		}
+	err = m.Start()
+	if err == nil {
+		t.Errorf("successfully started manager again. should not be possible: %s", err)
+	}
 
+	/*
 		address = "127.0.0.1:25353"
 		m.addr = address
 		err = m.Start()
