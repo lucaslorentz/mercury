@@ -11,7 +11,7 @@ import (
 
 var (
 	// RateLimitMax is the Number of requests before ignoring request (in RateLimitAge timeframe)
-	RateLimitMax = 8
+	RateLimitMax = 10
 	// RateLimitAge is Time to keep message cache (and in which to count max requests)
 	RateLimitAge = 2 * time.Second
 	// MsgRateLimitReached is the rate limit response

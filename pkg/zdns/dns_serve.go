@@ -134,7 +134,7 @@ func encapsulateSOA(records []dnssrv.RR) []dnssrv.RR {
 }
 
 func appendRecords(msg *dnssrv.Msg, level int, records []dnssrv.RR) {
-	if DNSSECKEY != nil {
+	if DNSSecPublicKey != nil {
 		records, _ = dnsRecordSign(records)
 		msg.AuthenticatedData = true
 	}
@@ -202,16 +202,16 @@ func dnsRecordSign(records []dnssrv.RR) (result []dnssrv.RR, err error) {
 		sig.TypeCovered = soa.Hdr.Rrtype
 		sig.Labels = uint8(dnssrv.CountLabel(soa.Hdr.Name)) // works for all 3
 		sig.OrigTtl = soa.Hdr.Ttl
-		sig.Expiration = expir          // date -u '+%s' -d"2011-02-01 04:25:05"
-		sig.Inception = incep           // date -u '+%s' -d"2011-01-02 04:25:05"
-		sig.KeyTag = DNSSECKEY.KeyTag() // Get the keyfrom the Key
-		sig.SignerName = DNSSECKEY.Hdr.Name
+		sig.Expiration = expir                // date -u '+%s' -d"2011-02-01 04:25:05"
+		sig.Inception = incep                 // date -u '+%s' -d"2011-01-02 04:25:05"
+		sig.KeyTag = DNSSecPublicKey.KeyTag() // Get the keyfrom the Key
+		sig.SignerName = DNSSecPublicKey.Hdr.Name
 		sig.Algorithm = dnssrv.RSASHA256
 
 		if len(records) == 0 {
 			return records, nil
 		}
-		err = sig.Sign(DNSSECPRIV.(*ecdsa.PrivateKey), []dnssrv.RR{r})
+		err = sig.Sign(DNSSecPrivateKey.(*ecdsa.PrivateKey), []dnssrv.RR{r})
 		if err != nil {
 			// TODO: error handling
 			//fmt.Printf("Signing Error:%s\n", err)

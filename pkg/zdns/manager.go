@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"sync"
+	"time"
 
 	dnssrv "github.com/miekg/dns"
 )
@@ -21,6 +22,28 @@ type Manager struct {
 	Log               chan string
 	Channels          *ChannelManager
 	stop              chan bool
+}
+
+// Settings contains all configurable options of the dns service
+type Settings struct {
+	// Manager
+	AXFERPassword    string            // password for XFERS of the DNS zone
+	DNSSecPublicKey  *dnssrv.DNSKEY    // public key to sign dns records with
+	DNSSecPrivateKey crypto.PrivateKey // private key to sign dns records with
+	// MessageCache
+	RateLimitMax int           // Number of requests before ignoring request (in RateLimitAge timeframe)
+	RateLimitAge time.Duration // Time to keep message cache (and in which to count max requests)
+	// DNS Forward
+	ForwardMaxRecusion    int           // Max recursion when doing forward lookups
+	ForwardMaxNameservers int           // Max names servers to query simultainious
+	ForwardQueryTimeout   time.Duration // timeout to wait for a forward query
+	// RootHints
+	RootHintsURL     string        // url to get the roothints file
+	RootHintsRefresh time.Duration // interval to get roothints
+	// Manager
+	AllowedForwarding []string // cidr allowed to forward
+	AllowedXfer       []string // cidr allowed to do xfer
+	AllowedRequests   []string // dns query types to respond to
 }
 
 // New creates a new DNS manager type
@@ -41,11 +64,11 @@ func New(addr string) *Manager {
 // AXFERPassword contains the password for XFERS of the DNS zone
 var AXFERPassword = "2093run1Oi23hrqlAhrv3"
 
-// DNSSECKEY contains the public key to sign dns records with
-var DNSSECKEY *dnssrv.DNSKEY
+// DNSSecPublicKey contains the public key to sign dns records with
+var DNSSecPublicKey *dnssrv.DNSKEY
 
-// DNSSECPRIV contains the private key to sign dns records with
-var DNSSECPRIV crypto.PrivateKey
+// DNSSecPrivateKey contains the private key to sign dns records with
+var DNSSecPrivateKey crypto.PrivateKey
 
 // Start starts the DNS manager
 func (m *Manager) Start() error {
