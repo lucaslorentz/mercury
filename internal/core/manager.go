@@ -129,3 +129,16 @@ func DumpNodes() {
 		}
 	}
 }
+
+func (m *Manager) GetPools() map[string]config.LoadbalancePool {
+	lb := make(map[string]config.LoadbalancePool)
+	config.Lock()
+	defer config.Unlock()
+	for pn, pool := range config.GetNoLock().Loadbalancer.Pools {
+		for bn, backend := range pool.Backends {
+			for nn, node := range backend.Nodes {
+			}
+		}
+	}
+	return lb
+}
