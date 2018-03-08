@@ -81,6 +81,15 @@ func (m *Manager) setupAPI() {
 		template:      "healthchecks",
 	})
 
+	// Backends are always used
+	http.Handle("/api/v1/backends/admin/", authenticate(apiBackendAdminHandler{manager: m}, string(APITokenSigningKey)))
+	http.Handle("/api/v1/backends/", apiBackendPublicHandler{manager: m})
+	http.Handle("/backends/", webBackendHandler{
+		title:         titleHead + "Checks",
+		templateFiles: []string{"header.tmpl", "footer.tmpl", "backends.tmpl"},
+		template:      "backends",
+	})
+
 	// Enable login
 	http.Handle("/api/v1/login/", apiLoginHandler{manager: m})
 	http.Handle("/login/", webLoginHandler{
