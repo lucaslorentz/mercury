@@ -361,8 +361,7 @@ func (m *Manager) InitializeWebserver() {
 	log := logging.For("core/webserver").WithField("ip", config.Get().Web.Binding).WithField("port", config.Get().Web.Port).WithField("func", "web")
 	log.Info("Starting web server")
 	server, listener, err := m.NewServer(config.Get().Web.Binding, config.Get().Web.Port)
-
-	if config.Get().Web.TLSConfig.CertificateFile != "" {
+	if config.Get().Web.TLSConfig.CertificateFile != "" || len(config.Get().Web.TLSConfig.CertificateFiles) > 0 {
 		log.WithField("file", config.Get().Web.TLSConfig.CertificateFile).Debug("Enabling SSL for web service")
 		tlsconf, terr := tlsconfig.LoadCertificate(config.Get().Web.TLSConfig)
 		if terr != nil {

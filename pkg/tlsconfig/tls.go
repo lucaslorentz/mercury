@@ -62,6 +62,8 @@ var TLSCipherLookup = map[string]uint16{
 type TLSConfig struct {
 	CertificateKey     string   `json:"certificatekey" toml:"certificatekey"`
 	CertificateFile    string   `json:"certificatefile" toml:"certificatefile"`
+	CertificateKeys    []string `json:"certificatekeys" toml:"certificatekeys"`
+	CertificateFiles   []string `json:"certificatefiles" toml:"certificatefiles"`
 	MinVersion         string   `json:"minversion" toml:"minversion"`
 	MaxVersion         string   `json:"maxversion" toml:"maxversion"`
 	Renegotiation      string   `json:"renegotiation" toml:"renegotiation"`
@@ -119,6 +121,17 @@ func LoadCertificate(t TLSConfig) (c *tls.Config, err error) {
 			return c, err
 		}
 		c.Certificates = []tls.Certificate{cert}
+	}
+
+	if len(t.CertificateFiles) == len(t.CertificateKeys) && len(t.CertificateFiles) > 0 {
+		for i := 0; i < len(t.CertificateFiles)-1; i++ {
+			cert, err := tls.LoadX509KeyPair(t.CertificateFiles[i], t.CertificateKeys[i])
+			if err != nil {
+				return c, err
+			}
+			c.Certificates = append(c.Certificates, cert)
+		}
+
 	}
 
 	return c, nil
@@ -184,19 +197,37 @@ func differenceArr(a, b []string) []string {
 
 // CertificateProvided returns true or there is a certificate configured in the tls config
 func (t TLSConfig) CertificateProvided() bool {
-	return t.CertificateFile != ""
+	return t.CertificateFile != "" || len(t.CertificateFiles) > 0
 }
 
 // Valid returns if given files and certificates are valid or not
 func (t TLSConfig) Valid() error {
-	if _, err := os.Stat(t.CertificateFile); err != nil {
-		return fmt.Errorf("Cannot access certificate file:%s error:%s", t.CertificateFile, err)
+	if len(t.CertificateFiles) != len(t.CertificateKeys) {
+		return fmt.Errorf("Certificate files count does not match certificates keys count. Each file should have a matching key!")
 	}
-	if _, err := os.Stat(t.CertificateKey); err != nil {
-		return fmt.Errorf("Cannot access certificate key:%s error:%s", t.CertificateKey, err)
-	}
-	if _, err := LoadCertificate(t); err != nil {
-		return fmt.Errorf("Cannot load TLS configutation: error:%s", err)
+	if len(t.CertificateFiles) > 0 {
+		for i := 0; i < len(t.CertificateFiles); i++ {
+			if _, err := os.Stat(t.CertificateFiles[i]); err != nil {
+				return fmt.Errorf("Cannot access certificate(%d) file:%s error:%s", i, t.CertificateFile, err)
+			}
+			if _, err := os.Stat(t.CertificateKeys[i]); err != nil {
+				return fmt.Errorf("Cannot access certificate(%d) key:%s error:%s", i, t.CertificateKey, err)
+			}
+		}
+		if _, err := LoadCertificate(t); err != nil {
+			return fmt.Errorf("Cannot load TLS configutation: error:%s", err)
+		}
+
+	} else {
+		if _, err := os.Stat(t.CertificateFile); err != nil {
+			return fmt.Errorf("Cannot access certificate file:%s error:%s", t.CertificateFile, err)
+		}
+		if _, err := os.Stat(t.CertificateKey); err != nil {
+			return fmt.Errorf("Cannot access certificate key:%s error:%s", t.CertificateKey, err)
+		}
+		if _, err := LoadCertificate(t); err != nil {
+			return fmt.Errorf("Cannot load TLS configutation: error:%s", err)
+		}
 	}
 	return nil
 }
