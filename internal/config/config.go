@@ -13,10 +13,10 @@ import (
 	yaml "gopkg.in/yaml.v2"
 
 	"github.com/schubergphilis/mercury/internal/web"
-	"github.com/schubergphilis/mercury/pkg/balancer"
 	"github.com/schubergphilis/mercury/pkg/cluster"
-	"github.com/schubergphilis/mercury/pkg/dns"
 	"github.com/schubergphilis/mercury/pkg/healthcheck"
+	"github.com/schubergphilis/mercury/pkg/iridium"
+	"github.com/schubergphilis/mercury/pkg/iridium/cache"
 	"github.com/schubergphilis/mercury/pkg/logging"
 	"github.com/schubergphilis/mercury/pkg/param"
 	"github.com/schubergphilis/mercury/pkg/tlsconfig"
@@ -55,12 +55,18 @@ const (
 
 // Config holds your main config
 type Config struct {
-	Logging      LoggingConfig `toml:"logging" json:"logging"`
-	Cluster      Cluster       `toml:"cluster" json:"cluster"`
-	DNS          dns.Config    `toml:"dns" json:"dns"`
-	Settings     Settings      `toml:"settings" json:"settings"`
-	Loadbalancer Loadbalancer  `toml:"loadbalancer" json:"loadbalancer"`
-	Web          web.Config    `toml:"web" json:"web"`
+	Logging LoggingConfig `toml:"logging" json:"logging"`
+	Cluster Cluster       `toml:"cluster" json:"cluster"`
+	//DNS          dns.Config    `toml:"dns" json:"dns"`
+	DNS          DNS          `toml:"dns" json:"dns"`
+	Settings     Settings     `toml:"settings" json:"settings"`
+	Loadbalancer Loadbalancer `toml:"loadbalancer" json:"loadbalancer"`
+	Web          web.Config   `toml:"web" json:"web"`
+}
+
+type DNS struct {
+	Settings iridium.Settings           `toml:"settings" json:"settings"`
+	Domains  map[string]cache.QueryType `toml:"domains" json:"domains"`
 }
 
 // Cluster contains the cluster settings
@@ -334,7 +340,7 @@ func (c *Config) ParseConfig() error {
 
 	SetDefaultSettingsConfig(&c.Settings)
 	SetDefaultClusterConfig(&c.Cluster.Settings)
-	SetDefaultDNSConfig(&c.DNS)
+	SetDefaultDNSConfig(&c.DNS.Settings)
 	SetDefaultWebConfig(&c.Web)
 	return nil
 }
@@ -409,33 +415,36 @@ func SetDefaultClusterConfig(d *cluster.Settings) {
 }
 
 // SetDefaultDNSConfig sets the default config for DNSService
-func SetDefaultDNSConfig(d *dns.Config) {
-	if d.Binding == "" {
-		d.Binding = "localhost"
+func SetDefaultDNSConfig(d *iridium.Settings) {
+	if d.Addr == "" {
+		d.Addr = "localhost:53"
 	}
 
-	if d.Port < 1 {
-		d.Port = 53
-	}
+	/*
+		if d.Port < 1 {
+			d.Port = 53
+		}
+	*/
 
 	if len(d.AllowedRequests) == 0 {
 		// Allow the most common DNS request types
 		d.AllowedRequests = []string{"A", "AAAA", "NS", "MX", "SOA", "TXT", "CAA", "ANY", "CNAME", "MB", "MG", "MR", "WKS", "PTR", "HINFO", "MINFO", "SPF"}
 	}
 
-	for domainName, localDomain := range d.Domains {
-		for rid, record := range localDomain.Records {
+	/*
+		for domainName, localDomain := range d.Domains {
+			for rid, record := range localDomain.Records {
 
-			// Add UUID to static records, dynamic ones are auto-generated
-			if record.Statistics == nil {
-				hash := sha256.New()
-				hash.Write([]byte(fmt.Sprintf("%s-%s-%x-%s", domainName, record.Name, record.Type, record.Target)))
-				uuid := fmt.Sprintf("%x", hash.Sum(nil))
-				d.Domains[domainName].Records[rid].UUID = uuid
-				d.Domains[domainName].Records[rid].Statistics = balancer.NewStatistics(uuid, 0)
+				// Add UUID to static records, dynamic ones are auto-generated
+				if record.Statistics == nil {
+					hash := sha256.New()
+					hash.Write([]byte(fmt.Sprintf("%s-%s-%x-%s", domainName, record.Name, record.Type, record.Target)))
+					uuid := fmt.Sprintf("%x", hash.Sum(nil))
+					d.Domains[domainName].Records[rid].UUID = uuid
+					d.Domains[domainName].Records[rid].Statistics = balancer.NewStatistics(uuid, 0)
+				}
 			}
-		}
-	}
+		}*/
 }
 
 // SetDefaultWebConfig sets the default config for Webservice

@@ -48,9 +48,9 @@ ciphersuites = ["TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384", "TLS_ECDHE_RSA_WITH_AES
 curvepreferences = ["CurveP521", "CurveP384", "CurveP256"]
 insecureskipverify = true
 [dns]
-binding = "0.0.0.0"
-port = 15353
-allow_forwarding = [ "%LOCALIP%/32", "::1/128" ]
+[dns.settings]
+addr = "127.0.0.1:15353"
+allowed_forwarding = [ "%LOCALIP%/32", "::1/128" ]
 #allowed_requests = [ "A", "AAAA" ]
 [dns.domains."domain.nl"]
 ttl = 11

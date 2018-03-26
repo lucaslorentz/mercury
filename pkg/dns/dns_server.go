@@ -17,6 +17,7 @@ import (
 
 	dnssrv "github.com/miekg/dns"
 	"github.com/rdoorn/dnsr"
+	"github.com/schubergphilis/mercury/pkg/iridium/forwarder"
 )
 
 // Domains is a collection of dns domains
@@ -73,8 +74,9 @@ var dnsmanager = struct {
 	TCPServer       *dnssrv.Server
 	UDPServer       *dnssrv.Server
 	Resolver        *dnsr.Resolver
+	Resolver2       *forwarder.Forwarder
 	AllowForwarding []*net.IPNet
-}{node: make(map[string]Domains), stop: make(chan bool, 1), AllowedRequests: []string{}, proxyStats: false, TCPServer: &dnssrv.Server{}, UDPServer: &dnssrv.Server{}, Resolver: dnsr.New(0)}
+}{node: make(map[string]Domains), stop: make(chan bool, 1), AllowedRequests: []string{}, proxyStats: false, TCPServer: &dnssrv.Server{}, UDPServer: &dnssrv.Server{}, Resolver: dnsr.New(0), Resolver2: forwarder.New()}
 
 // Updates the counter of an dns record which was requested
 func updateCounter(domain string, record Record) {
@@ -275,7 +277,9 @@ func parseQuery(m *dnssrv.Msg, client string) (int, error) {
 		if len(records) == 0 && !localZone(domainName) {
 			if allowedToForward(clientIP) {
 				clog.Debug("Relaying request for client")
-				dnsForwarder(m, q)
+				m.Rcode = dnsmanager.Resolver2.ServeRequest(m, q, clientIP)
+
+				//dnsForwarder(m, q)
 				return -1, nil // copy error result
 			}
 			// no local zone, and nog allowed to forward

@@ -1,7 +1,7 @@
 package core
 
+/*
 import (
-	"fmt"
 	"sync"
 
 	"github.com/schubergphilis/mercury/internal/config"
@@ -23,11 +23,6 @@ func (manager *Manager) DNSHandler() {
 				Preference: dnsupdate.BalanceMode.Preference,
 				Topology:   dnsupdate.BalanceMode.LocalNetwork,
 				RWMutex:    new(sync.RWMutex),
-			}
-
-			ttl := 10 // default
-			if domain, ok := config.Get().DNS.Domains[dnsupdate.DNSEntry.Domain]; ok {
-				ttl = domain.TTL
 			}
 
 			record := dns.Record{
@@ -84,20 +79,23 @@ func (manager Manager) InitializeDNSUpdates() {
 	log := logging.For("core/dnsinit").WithField("func", "dns")
 	log.Debugf("Starting DNS handler")
 	go manager.DNSHandler()
-	UpdateDNSConfig()
+	manager.UpdateDNSConfig()
 	dns.EnableProxyStats(config.Get().Settings.EnableProxy == YES)
 }
 
 // StartDNSServer starts the dns server
 func (manager Manager) StartDNSServer() {
-	go dns.Server(config.Get().DNS.Binding, config.Get().DNS.Port, config.Get().DNS.AllowedRequests)
+
+	manager.dnsService.LoadSettings(&config.Get().DNS)
+	//go dns.Server(config.Get().DNS.Binding, config.Get().DNS.Port, config.Get().DNS.AllowedRequests)
 }
 
 // UpdateDNSConfig adds new records, and removes obsolete records
-func UpdateDNSConfig() {
+func (manager Manager) UpdateDNSConfig() {
 	log := logging.For("core/updatednsconfig").WithField("func", "dns")
-	log.WithField("hosts", fmt.Sprintf("%v", config.Get().DNS.AllowForwarding)).Info("Initializing DNS Forwarder")
-	dns.AllowForwarding(config.Get().DNS.AllowForwarding)
+	//log.WithField("hosts", fmt.Sprintf("%v", config.Get().DNS.AllowedForwarding)).Info("Initializing DNS Forwarder")
+	//dns.AllowForwarding(config.Get().DNS.AllowedForwarding)
+	manager.dnsService.LoadSettings(&config.Get().DNS)
 
 	log.Info("Initializing DNS Config Updates")
 	// Loop through all manual entries in the config
@@ -156,3 +154,4 @@ func healthcheckStatusToDNSStatus(s healthcheck.Status) dns.Status {
 	}
 	return dns.Automatic
 }
+*/

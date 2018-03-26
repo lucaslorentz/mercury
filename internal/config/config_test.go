@@ -22,26 +22,26 @@ func TestConfig(t *testing.T) {
 		t.Errorf("Expected error on loading false config (got:%s)", err)
 	}
 
-	if Get().DNS.Binding != "localhost" {
-		t.Errorf("Expected DNS binding to be test-second-config (got:%s)", Get().DNS.Binding)
+	if Get().DNS.Settings.Addr != "localhost:53" {
+		t.Errorf("Expected DNS binding to be test-second-config (got:%s)", Get().DNS.Settings.Addr)
 	}
 
 	param.SetConfig("../../test/broken-config.toml")
 	ReloadConfig()
 
-	if Get().DNS.Binding != "localhost" {
-		t.Errorf("Expected DNS binding to be test-second-config (got:%s)", Get().DNS.Binding)
+	if Get().DNS.Settings.Addr != "localhost:53" {
+		t.Errorf("Expected DNS binding to be test-broken-config (got:%s)", Get().DNS.Settings.Addr)
 	}
 
 	param.SetConfig("../../test/second-config.toml")
 	ReloadConfig()
 
 	Lock()
-	config.DNS.Binding = "test"
+	config.DNS.Settings.Addr = "test"
 	Unlock()
 
-	if Get().DNS.Binding != "test" {
-		t.Errorf("Expected DNS binding to be test (got:%s)", Get().DNS.Binding)
+	if Get().DNS.Settings.Addr != "test" {
+		t.Errorf("Expected DNS binding to be test (got:%s)", Get().DNS.Settings.Addr)
 	}
 
 }

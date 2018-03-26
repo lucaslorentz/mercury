@@ -7,6 +7,7 @@ import (
 	"github.com/schubergphilis/mercury/internal/web"
 	"github.com/schubergphilis/mercury/pkg/cluster"
 	"github.com/schubergphilis/mercury/pkg/healthcheck"
+	"github.com/schubergphilis/mercury/pkg/iridium"
 	"github.com/schubergphilis/mercury/pkg/logging"
 )
 
@@ -30,6 +31,7 @@ type Manager struct {
 	removeProxyBackend              chan *config.ProxyBackendNodeUpdate
 	proxyBackendStatisticsUpdate    chan *config.ProxyBackendStatisticsUpdate
 	healthManager                   *healthcheck.Manager
+	dnsService                      *iridium.Server
 	webAuthenticator                web.Auth
 }
 
@@ -47,6 +49,7 @@ func NewManager() *Manager {
 		proxyBackendStatisticsUpdate:    make(chan *config.ProxyBackendStatisticsUpdate),
 		clusterGlbalDNSStatisticsUpdate: make(chan *config.ClusterPacketGlbalDNSStatisticsUpdate),
 		clearStatsProxyBackend:          make(chan *config.ClusterPacketClearProxyStatistics),
+		dnsService:                      iridium.New(),
 	}
 	return manager
 }
@@ -84,8 +87,9 @@ func Initialize(reload <-chan bool) {
 	}
 
 	// DNS updates
-	go manager.InitializeDNSUpdates()
-	go manager.StartDNSServer()
+	//go manager.InitializeDNSUpdates()
+	//go manager.StartDNSServer()
+	manager.dnsServiceStart()
 
 	// Webserver
 	go manager.InitializeWebserver()
@@ -99,8 +103,9 @@ func Initialize(reload <-chan bool) {
 			// Create new listeners if any
 			CreateListeners()
 			// Start new DNS Listeners (if changed)
-			go manager.StartDNSServer()
-			go UpdateDNSConfig()
+			manager.dnsServiceReload()
+			//go manager.StartDNSServer()
+			//go UpdateDNSConfig()
 			manager.dnsrefresh <- true
 
 			// Start new healthchecks, and send exits to no longer used ones
