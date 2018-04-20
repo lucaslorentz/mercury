@@ -3,6 +3,8 @@
  This file is used to list changes made in each major version of Mercury.
 
 ## unreleased
+Change:
+  * Explicitly refuse unsupported opscode requests
 
 ## 0.12.4
 Bug:
