@@ -2,7 +2,7 @@
 
  This file is used to list changes made in each major version of Mercury.
 
-## unreleased
+## unreleased 0.12.5
 Change:
   * Explicitly refuse unsupported opscode requests
 
