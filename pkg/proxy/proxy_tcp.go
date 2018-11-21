@@ -147,7 +147,7 @@ func (l *Listener) Handler(client net.Conn) {
 	node.Statistics.RXAdd(in)
 	node.Statistics.TXAdd(out)
 	l.Statistics.ClientsConnectedSub(1)
-	clog.WithField("statistics", fmt.Sprintf("%+v", node.Statistics)).Debug("Statistics updated")
+	//clog.WithField("statistics", fmt.Sprintf("%+v", node.Statistics)).Debug("Statistics updated")
 
 	transfertime := time.Since(starttime)
 	clog.WithField("connecttime", connecttime.Seconds()).WithField("transfertime", transfertime.Seconds()).WithField("firstbyte", firstbytetime).Info("Forwarding TCP finished")
