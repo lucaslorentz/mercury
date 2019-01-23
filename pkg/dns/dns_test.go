@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -136,4 +137,10 @@ func answerType(m *dnssrv.Msg, qtype uint16) bool {
 		}
 	}
 	return false
+}
+
+func TestSoa(t *testing.T) {
+	newRecord := "example.com 10 SOA chat.prospery.link. nsglb-a.prospery.link. 30 30 3600 10"
+	rr, err := dnssrv.NewRR(newRecord)
+	log.Printf("record: %+v, err:%s", rr, err)
 }
