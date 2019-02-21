@@ -12,40 +12,19 @@
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/schubergphilis/mercury/pkg/logging"
 )
-
-var (
-	defaultDialer = &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
-
-	bufferPool = sync.Pool{New: createBuffer}
-)
-
-func createBuffer() interface{} {
-	return make([]byte, 0, 32*1024)
-}
-
-func pooledIoCopy(dst io.Writer, src io.Reader) {
-	buf := bufferPool.Get().([]byte)
-	defer bufferPool.Put(buf)
-
-	// CopyBuffer only uses buf up to its length and panics if it's 0.
-	// Due to that we extend buf's length to its capacity here and
-	// ensure it's always non-zero.
-	bufCap := cap(buf)
-	io.CopyBuffer(dst, src, buf[0:bufCap:bufCap])
-}
 
 // onExitFlushLoop is a callback set by tests to detect the state of the
 // flushLoop() goroutine.
@@ -59,6 +38,8 @@ type ReverseProxy struct {
 	// the request into a new request to be sent
 	// using Transport. Its response is then copied
 	// back to the original client unmodified.
+	// Director must not access the provided Request
+	// after returning.
 	Director func(*http.Request)
 
 	// The transport used to perform proxy requests.
@@ -71,48 +52,201 @@ type ReverseProxy struct {
 	// If zero, no periodic flushing is done.
 	FlushInterval time.Duration
 
-	// ModifyResponse is an optional function that
-	// modifies the Response from the backend.
-	// If it returns an error, the proxy returns a StatusBadGateway error.
+	// ErrorLog specifies an optional logger for errors
+	// that occur when attempting to proxy the request.
+	// If nil, logging goes to os.Stderr via the log package's
+	// standard logger.
+	ErrorLog *log.Logger
+
+	// BufferPool optionally specifies a buffer pool to
+	// get byte slices for use by io.CopyBuffer when
+	// copying HTTP response bodies.
+	BufferPool BufferPool
+
+	// ModifyResponse is an optional function that modifies the
+	// Response from the backend. It is called if the backend
+	// returns a response at all, with any HTTP status code.
+	// If the backend is unreachable, the optional ErrorHandler is
+	// called without any call to ModifyResponse.
+	//
+	// If ModifyResponse returns an error, ErrorHandler is called
+	// with its error value. If ErrorHandler is nil, its default
+	// implementation is used.
 	ModifyResponse func(*http.Response) error
+
+	// ErrorHandler is an optional function that handles errors
+	// reaching the backend or errors from ModifyResponse.
+	//
+	// If nil, the default is to log the provided error and return
+	// a 502 Status Bad Gateway response.
+	ErrorHandler func(http.ResponseWriter, *http.Request, error)
 }
 
-// Though the relevant directive prefix is just "unix:", url.Parse
-// will - assuming the regular URL scheme - add additional slashes
-// as if "unix" was a request protocol.
-// What we need is just the path, so if "unix:/var/run/www.socket"
-// was the proxy directive, the parsed hostName would be
-// "unix:///var/run/www.socket", hence the ambiguous trimming.
-func socketDial(hostName string) func(network, addr string) (conn net.Conn, err error) {
-	return func(network, addr string) (conn net.Conn, err error) {
-		return net.Dial("unix", hostName[len("unix://"):])
+// A BufferPool is an interface for getting and returning temporary
+// byte slices for use by io.CopyBuffer.
+type BufferPool interface {
+	Get() []byte
+	Put([]byte)
+}
+
+func singleJoiningSlash(a, b string) string {
+	aslash := strings.HasSuffix(a, "/")
+	bslash := strings.HasPrefix(b, "/")
+	switch {
+	case aslash && bslash:
+		return a + b[1:]
+	case !aslash && !bslash:
+		return a + "/" + b
+	}
+	return a + b
+}
+
+// NewSingleHostReverseProxy returns a new ReverseProxy that routes
+// URLs to the scheme, host, and base path provided in target. If the
+// target's path is "/base" and the incoming request was for "/dir",
+// the target request will be for /base/dir.
+// NewSingleHostReverseProxy does not rewrite the Host header.
+// To rewrite Host headers, use ReverseProxy directly with a custom
+// Director policy.
+func NewSingleHostReverseProxy(target *url.URL) *ReverseProxy {
+	targetQuery := target.RawQuery
+	director := func(req *http.Request) {
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+		req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
+		if targetQuery == "" || req.URL.RawQuery == "" {
+			req.URL.RawQuery = targetQuery + req.URL.RawQuery
+		} else {
+			req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
+		}
+		if _, ok := req.Header["User-Agent"]; !ok {
+			// explicitly disable User-Agent so it's not set to default value
+			req.Header.Set("User-Agent", "")
+		}
+	}
+	return &ReverseProxy{Director: director}
+}
+
+func copyHeader(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
 	}
 }
 
-// ServeHTTP serves the proxied request to the upstream by performing a roundtrip.
-// It is designed to handle websocket connection upgrades as well.
-func (rp *ReverseProxy) ServeHTTP(rw http.ResponseWriter, outreq *http.Request) {
+func cloneHeader(h http.Header) http.Header {
+	h2 := make(http.Header, len(h))
+	for k, vv := range h {
+		vv2 := make([]string, len(vv))
+		copy(vv2, vv)
+		h2[k] = vv2
+	}
+	return h2
+}
+
+// Hop-by-hop headers. These are removed when sent to the backend.
+// As of RFC 7230, hop-by-hop headers are required to appear in the
+// Connection header field. These are the headers defined by the
+// obsoleted RFC 2616 (section 13.5.1) and are used for backward
+// compatibility.
+var hopHeaders = []string{
+	"Connection",
+	"Proxy-Connection", // non-standard but still sent by libcurl and rejected by e.g. google
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",      // canonicalized version of "TE"
+	"Trailer", // not Trailers per URL above; https://www.rfc-editor.org/errata_search.php?eid=4522
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+func (p *ReverseProxy) defaultErrorHandler(rw http.ResponseWriter, req *http.Request, err error) {
+	p.logf("http: proxy error: %v", err)
+	rw.WriteHeader(http.StatusBadGateway)
+}
+
+func (p *ReverseProxy) getErrorHandler() func(http.ResponseWriter, *http.Request, error) {
+	if p.ErrorHandler != nil {
+		return p.ErrorHandler
+	}
+	return p.defaultErrorHandler
+}
+
+func (p *ReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	log := logging.For("proxy/serverhttp")
 
-	transport := rp.Transport /*
-		if requestIsWebsocket(outreq) {
-			transport = newConnHijackerTransport(transport)
-		} else if transport == nil {
-			transport = http.DefaultTransport
-		}*/
+	transport := p.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
 
-	rp.Director(outreq)
+	ctx := req.Context()
+	if cn, ok := rw.(http.CloseNotifier); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		notifyChan := cn.CloseNotify()
+		go func() {
+			select {
+			case <-notifyChan:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+
+	outreq := req.WithContext(ctx) // includes shallow copies of maps, but okay
+	if req.ContentLength == 0 {
+		outreq.Body = nil // Issue 16036: nil Body for http.Transport retries
+	}
+
+	outreq.Header = cloneHeader(req.Header)
+
+	p.Director(outreq)
+	outreq.Close = false
+
+	removeConnectionHeaders(outreq.Header)
+
+	// Remove hop-by-hop headers to the backend. Especially
+	// important is "Connection" because we want a persistent
+	// connection, regardless of what the client sent to us.
+	for _, h := range hopHeaders {
+		hv := outreq.Header.Get(h)
+		if hv == "" {
+			continue
+		}
+		if h == "Te" && hv == "trailers" {
+			// Issue 21096: tell backend applications that
+			// care about trailer support that we support
+			// trailers. (We do, but we don't go out of
+			// our way to advertise that unless the
+			// incoming client request thought it was
+			// worth mentioning)
+			continue
+		}
+		outreq.Header.Del(h)
+	}
+
+	if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+		// If we aren't the first proxy retain prior
+		// X-Forwarded-For information as a comma+space
+		// separated list and fold multiple headers into one.
+		if prior, ok := outreq.Header["X-Forwarded-For"]; ok {
+			clientIP = strings.Join(prior, ", ") + ", " + clientIP
+		}
+		outreq.Header.Set("X-Forwarded-For", clientIP)
+	}
 
 	res, err := transport.RoundTrip(outreq)
 	if err != nil {
-		rw.WriteHeader(http.StatusBadGateway)
-		log.WithError(err).Warnf("Proxy Roundtrip error")
-		//return err
+		p.getErrorHandler()(rw, outreq, err)
 		return
 	}
 	isWebsocket := res.StatusCode == http.StatusSwitchingProtocols && strings.ToLower(res.Header.Get("Upgrade")) == "websocket"
 
-	// Remove hop-by-hop headers listed in the
+	/*// Remove hop-by-hop headers listed in the
 	// "Connection" header of the response.
 	if c := res.Header.Get("Connection"); c != "" {
 		for _, f := range strings.Split(c, ",") {
@@ -120,7 +254,9 @@ func (rp *ReverseProxy) ServeHTTP(rw http.ResponseWriter, outreq *http.Request) 
 				res.Header.Del(f)
 			}
 		}
-	}
+	}*/
+
+	removeConnectionHeaders(res.Header)
 
 	for _, h := range hopHeaders {
 		res.Header.Del(h)
@@ -213,15 +349,16 @@ func (rp *ReverseProxy) ServeHTTP(rw http.ResponseWriter, outreq *http.Request) 
 		pooledIoCopy(backendConn, conn)
 	} else {
 
-		if rp.ModifyResponse != nil {
-			if err := rp.ModifyResponse(res); err != nil {
-				rw.WriteHeader(http.StatusBadGateway)
-				log.WithError(err).Warnf("Proxy ModifyResponse error")
-				return //fmt.Errorf("http: proxy error: %v", err)
+		if p.ModifyResponse != nil {
+			if err := p.ModifyResponse(res); err != nil {
+				res.Body.Close()
+				p.getErrorHandler()(rw, outreq, err)
+				return
 			}
 		}
 
 		copyHeader(rw.Header(), res.Header)
+
 		// if we do not have a content Type
 		// if we do have content Encoding
 		// and content encoding is gzip/compress/deflate/br
@@ -237,7 +374,8 @@ func (rp *ReverseProxy) ServeHTTP(rw http.ResponseWriter, outreq *http.Request) 
 		}
 		// The "Trailer" header isn't included in the Transport's response,
 		// at least for *http.Transport. Build it up from Trailer.
-		if len(res.Trailer) > 0 {
+		announcedTrailers := len(res.Trailer)
+		if announcedTrailers > 0 {
 			trailerKeys := make([]string, 0, len(res.Trailer))
 			for k := range res.Trailer {
 				trailerKeys = append(trailerKeys, k)
@@ -254,20 +392,75 @@ func (rp *ReverseProxy) ServeHTTP(rw http.ResponseWriter, outreq *http.Request) 
 				fl.Flush()
 			}
 		}
-		rp.copyResponse(rw, res.Body)
+		err := p.copyResponse(rw, res.Body)
+		if err != nil {
+			defer res.Body.Close()
+			// Since we're streaming the response, if we run into an error all we can do
+			// is abort the request. Issue 23643: ReverseProxy should use ErrAbortHandler
+			// on read error while copying body.
+			if !shouldPanicOnCopyError(req) {
+				p.logf("suppressing panic for copyResponse error in test; copy error: %v", err)
+				return
+			}
+			panic(http.ErrAbortHandler)
+		}
 		res.Body.Close() // close now, instead of defer, to populate res.Trailer
-		copyHeader(rw.Header(), res.Trailer)
+
+		if len(res.Trailer) == announcedTrailers {
+			copyHeader(rw.Header(), res.Trailer)
+			return
+		}
+		for k, vv := range res.Trailer {
+			k = http.TrailerPrefix + k
+			for _, v := range vv {
+				rw.Header().Add(k, v)
+			}
+		}
 	}
 
 	return // nil
 }
 
-func (rp *ReverseProxy) copyResponse(dst io.Writer, src io.Reader) {
-	if rp.FlushInterval != 0 {
+var inOurTests bool // whether we're in our own tests
+
+// shouldPanicOnCopyError reports whether the reverse proxy should
+// panic with http.ErrAbortHandler. This is the right thing to do by
+// default, but Go 1.10 and earlier did not, so existing unit tests
+// weren't expecting panics. Only panic in our own tests, or when
+// running under the HTTP server.
+func shouldPanicOnCopyError(req *http.Request) bool {
+	if inOurTests {
+		// Our tests know to handle this panic.
+		return true
+	}
+	if req.Context().Value(http.ServerContextKey) != nil {
+		// We seem to be running under an HTTP server, so
+		// it'll recover the panic.
+		return true
+	}
+	// Otherwise act like Go 1.10 and earlier to not break
+	// existing tests.
+	return false
+}
+
+// removeConnectionHeaders removes hop-by-hop headers listed in the "Connection" header of h.
+// See RFC 7230, section 6.1
+func removeConnectionHeaders(h http.Header) {
+	if c := h.Get("Connection"); c != "" {
+		for _, f := range strings.Split(c, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				h.Del(f)
+			}
+		}
+	}
+}
+
+func (p *ReverseProxy) copyResponse(dst io.Writer, src io.Reader) error {
+	if p.FlushInterval != 0 {
 		if wf, ok := dst.(writeFlusher); ok {
 			mlw := &maxLatencyWriter{
 				dst:     wf,
-				latency: rp.FlushInterval,
+				latency: p.FlushInterval,
 				done:    make(chan bool),
 			}
 			go mlw.flushLoop()
@@ -275,8 +468,95 @@ func (rp *ReverseProxy) copyResponse(dst io.Writer, src io.Reader) {
 			dst = mlw
 		}
 	}
-	pooledIoCopy(dst, src)
+
+	var buf []byte
+	if p.BufferPool != nil {
+		buf = p.BufferPool.Get()
+		defer p.BufferPool.Put(buf)
+	}
+	_, err := p.copyBuffer(dst, src, buf)
+	return err
 }
+
+// copyBuffer returns any write errors or non-EOF read errors, and the amount
+// of bytes written.
+func (p *ReverseProxy) copyBuffer(dst io.Writer, src io.Reader, buf []byte) (int64, error) {
+	if len(buf) == 0 {
+		buf = make([]byte, 32*1024)
+	}
+	var written int64
+	for {
+		nr, rerr := src.Read(buf)
+		if rerr != nil && rerr != io.EOF && rerr != context.Canceled {
+			p.logf("httputil: ReverseProxy read error during body copy: %v", rerr)
+		}
+		if nr > 0 {
+			nw, werr := dst.Write(buf[:nr])
+			if nw > 0 {
+				written += int64(nw)
+			}
+			if werr != nil {
+				return written, werr
+			}
+			if nr != nw {
+				return written, io.ErrShortWrite
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF {
+				rerr = nil
+			}
+			return written, rerr
+		}
+	}
+}
+
+func (p *ReverseProxy) logf(format string, args ...interface{}) {
+	if p.ErrorLog != nil {
+		p.ErrorLog.Printf(format, args...)
+	} else {
+		log.Printf(format, args...)
+	}
+}
+
+type writeFlusher interface {
+	io.Writer
+	http.Flusher
+}
+
+type maxLatencyWriter struct {
+	dst     writeFlusher
+	latency time.Duration
+
+	mu   sync.Mutex // protects Write + Flush
+	done chan bool
+}
+
+func (m *maxLatencyWriter) Write(p []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dst.Write(p)
+}
+
+func (m *maxLatencyWriter) flushLoop() {
+	t := time.NewTicker(m.latency)
+	defer t.Stop()
+	for {
+		select {
+		case <-m.done:
+			if onExitFlushLoop != nil {
+				onExitFlushLoop()
+			}
+			return
+		case <-t.C:
+			m.mu.Lock()
+			m.dst.Flush()
+			m.mu.Unlock()
+		}
+	}
+}
+
+func (m *maxLatencyWriter) stop() { m.done <- true }
 
 // skip these headers if they already exist.
 // see https://github.com/mholt/caddy/pull/1112#discussion_r80092582
@@ -289,7 +569,7 @@ var skipHeaders = map[string]struct{}{
 	"Expires":             {},
 }
 
-func copyHeader(dst, src http.Header) {
+/*func copyHeader(dst, src http.Header) {
 	for k, vv := range src {
 		if _, ok := dst[k]; ok {
 			// skip some predefined headers
@@ -305,22 +585,7 @@ func copyHeader(dst, src http.Header) {
 		}
 	}
 }
-
-// Hop-by-hop headers. These are removed when sent to the backend.
-// http://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html
-var hopHeaders = []string{
-	"Alt-Svc",
-	"Alternate-Protocol",
-	"Connection",
-	"Keep-Alive",
-	"Proxy-Authenticate",
-	"Proxy-Authorization",
-	"Proxy-Connection", // non-standard but still sent by libcurl and rejected by e.g. google
-	"Te",               // canonicalized version of "TE"
-	"Trailer",          // not Trailers per URL above; http://www.rfc-editor.org/errata_search.php?eid=4522
-	"Transfer-Encoding",
-	"Upgrade",
-}
+*/
 
 type respUpdateFn func(resp *http.Response)
 
@@ -393,6 +658,63 @@ func getTransportDial(t *http.Transport) func(network, addr string) (net.Conn, e
 	return defaultDialer.Dial
 }
 
+// stripPort returns address without its port if it has one and
+// works with IP addresses as well as hostnames formatted as host:port.
+//
+// IPv6 addresses (excluding the port) must be enclosed in
+// square brackets similar to the requirements of Go's stdlib.
+func stripPort(address string) string {
+	// Keep in mind that the address might be a IPv6 address
+	// and thus contain a colon, but not have a port.
+	portIdx := strings.LastIndex(address, ":")
+	ipv6Idx := strings.LastIndex(address, "]")
+	if portIdx > ipv6Idx {
+		address = address[:portIdx]
+	}
+	return address
+}
+
+type tlsHandshakeTimeoutError struct{}
+
+func (tlsHandshakeTimeoutError) Timeout() bool   { return true }
+func (tlsHandshakeTimeoutError) Temporary() bool { return true }
+func (tlsHandshakeTimeoutError) Error() string   { return "net/http: TLS handshake timeout" }
+
+// cloneTLSClientConfig is like cloneTLSConfig but omits
+// the fields SessionTicketsDisabled and SessionTicketKey.
+// This makes it safe to call cloneTLSClientConfig on a config
+// in active use by a server.
+func cloneTLSClientConfig(cfg *tls.Config) *tls.Config {
+	if cfg == nil {
+		return &tls.Config{}
+	}
+	return &tls.Config{
+		Rand:                        cfg.Rand,
+		Time:                        cfg.Time,
+		Certificates:                cfg.Certificates,
+		NameToCertificate:           cfg.NameToCertificate,
+		GetCertificate:              cfg.GetCertificate,
+		RootCAs:                     cfg.RootCAs,
+		NextProtos:                  cfg.NextProtos,
+		ServerName:                  cfg.ServerName,
+		ClientAuth:                  cfg.ClientAuth,
+		ClientCAs:                   cfg.ClientCAs,
+		InsecureSkipVerify:          cfg.InsecureSkipVerify,
+		CipherSuites:                cfg.CipherSuites,
+		PreferServerCipherSuites:    cfg.PreferServerCipherSuites,
+		ClientSessionCache:          cfg.ClientSessionCache,
+		MinVersion:                  cfg.MinVersion,
+		MaxVersion:                  cfg.MaxVersion,
+		CurvePreferences:            cfg.CurvePreferences,
+		DynamicRecordSizingDisabled: cfg.DynamicRecordSizingDisabled,
+		Renegotiation:               cfg.Renegotiation,
+	}
+}
+
+func requestIsWebsocket(req *http.Request) bool {
+	return strings.ToLower(req.Header.Get("Upgrade")) == "websocket" && strings.Contains(strings.ToLower(req.Header.Get("Connection")), "upgrade")
+}
+
 // getTransportDial always returns a TLS Dialer
 // and defaults to the existing t.DialTLS.
 func getTransportDialTLS(t *http.Transport) func(network, addr string) (net.Conn, error) {
@@ -455,98 +777,38 @@ func getTransportDialTLS(t *http.Transport) func(network, addr string) (net.Conn
 	}
 }
 
-// stripPort returns address without its port if it has one and
-// works with IP addresses as well as hostnames formatted as host:port.
-//
-// IPv6 addresses (excluding the port) must be enclosed in
-// square brackets similar to the requirements of Go's stdlib.
-func stripPort(address string) string {
-	// Keep in mind that the address might be a IPv6 address
-	// and thus contain a colon, but not have a port.
-	portIdx := strings.LastIndex(address, ":")
-	ipv6Idx := strings.LastIndex(address, "]")
-	if portIdx > ipv6Idx {
-		address = address[:portIdx]
+var (
+	defaultDialer = &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
 	}
-	return address
+
+	bufferPool = sync.Pool{New: createBuffer}
+)
+
+func createBuffer() interface{} {
+	return make([]byte, 0, 32*1024)
 }
 
-type tlsHandshakeTimeoutError struct{}
+func pooledIoCopy(dst io.Writer, src io.Reader) {
+	buf := bufferPool.Get().([]byte)
+	defer bufferPool.Put(buf)
 
-func (tlsHandshakeTimeoutError) Timeout() bool   { return true }
-func (tlsHandshakeTimeoutError) Temporary() bool { return true }
-func (tlsHandshakeTimeoutError) Error() string   { return "net/http: TLS handshake timeout" }
+	// CopyBuffer only uses buf up to its length and panics if it's 0.
+	// Due to that we extend buf's length to its capacity here and
+	// ensure it's always non-zero.
+	bufCap := cap(buf)
+	io.CopyBuffer(dst, src, buf[0:bufCap:bufCap])
+}
 
-// cloneTLSClientConfig is like cloneTLSConfig but omits
-// the fields SessionTicketsDisabled and SessionTicketKey.
-// This makes it safe to call cloneTLSClientConfig on a config
-// in active use by a server.
-func cloneTLSClientConfig(cfg *tls.Config) *tls.Config {
-	if cfg == nil {
-		return &tls.Config{}
-	}
-	return &tls.Config{
-		Rand:                        cfg.Rand,
-		Time:                        cfg.Time,
-		Certificates:                cfg.Certificates,
-		NameToCertificate:           cfg.NameToCertificate,
-		GetCertificate:              cfg.GetCertificate,
-		RootCAs:                     cfg.RootCAs,
-		NextProtos:                  cfg.NextProtos,
-		ServerName:                  cfg.ServerName,
-		ClientAuth:                  cfg.ClientAuth,
-		ClientCAs:                   cfg.ClientCAs,
-		InsecureSkipVerify:          cfg.InsecureSkipVerify,
-		CipherSuites:                cfg.CipherSuites,
-		PreferServerCipherSuites:    cfg.PreferServerCipherSuites,
-		ClientSessionCache:          cfg.ClientSessionCache,
-		MinVersion:                  cfg.MinVersion,
-		MaxVersion:                  cfg.MaxVersion,
-		CurvePreferences:            cfg.CurvePreferences,
-		DynamicRecordSizingDisabled: cfg.DynamicRecordSizingDisabled,
-		Renegotiation:               cfg.Renegotiation,
+// Though the relevant directive prefix is just "unix:", url.Parse
+// will - assuming the regular URL scheme - add additional slashes
+// as if "unix" was a request protocol.
+// What we need is just the path, so if "unix:/var/run/www.socket"
+// was the proxy directive, the parsed hostName would be
+// "unix:///var/run/www.socket", hence the ambiguous trimming.
+func socketDial(hostName string) func(network, addr string) (conn net.Conn, err error) {
+	return func(network, addr string) (conn net.Conn, err error) {
+		return net.Dial("unix", hostName[len("unix://"):])
 	}
 }
-
-func requestIsWebsocket(req *http.Request) bool {
-	return strings.ToLower(req.Header.Get("Upgrade")) == "websocket" && strings.Contains(strings.ToLower(req.Header.Get("Connection")), "upgrade")
-}
-
-type writeFlusher interface {
-	io.Writer
-	http.Flusher
-}
-
-type maxLatencyWriter struct {
-	dst     writeFlusher
-	latency time.Duration
-
-	lk   sync.Mutex // protects Write + Flush
-	done chan bool
-}
-
-func (m *maxLatencyWriter) Write(p []byte) (int, error) {
-	m.lk.Lock()
-	defer m.lk.Unlock()
-	return m.dst.Write(p)
-}
-
-func (m *maxLatencyWriter) flushLoop() {
-	t := time.NewTicker(m.latency)
-	defer t.Stop()
-	for {
-		select {
-		case <-m.done:
-			if onExitFlushLoop != nil {
-				onExitFlushLoop()
-			}
-			return
-		case <-t.C:
-			m.lk.Lock()
-			m.dst.Flush()
-			m.lk.Unlock()
-		}
-	}
-}
-
-func (m *maxLatencyWriter) stop() { m.done <- true }
